@@ -3635,6 +3635,12 @@ class GatewayRunner:
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
+        if canonical == "edgy":
+            return await self._handle_edgy_command(event)
+
+        if canonical == "normal":
+            return await self._handle_normal_command(event)
+
         if canonical == "plan":
             try:
                 from agent.skill_commands import build_plan_path, build_skill_invocation_message
@@ -5910,7 +5916,74 @@ class GatewayRunner:
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
-    
+
+    async def _handle_edgy_command(self, event: MessageEvent) -> str:
+        """Handle /edgy command — activate Sydney Sweeney edgy mode."""
+        from gateway.edgy_state import set_edgy_session, set_current_thread_edgy
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        chat_id = str(source.chat_id)
+
+        # Mark session as edgy
+        set_edgy_session(session_key, chat_id=chat_id, enabled=True)
+
+        # Set voice-only mode for this chat
+        voice_key = self._voice_key(source.platform, source.chat_id)
+        self._voice_mode[voice_key] = "voice_only"
+        self._save_voice_modes()
+
+        # Set model override to oMLX (Qwen3.6 Heretic)
+        self._session_model_overrides[session_key] = {
+            "model": "Qwen3.6-35B-A3B-Heretic-MLX-mxfp8",
+            "provider": "custom",
+            "base_url": "http://127.0.0.1:8000/v1",
+            "api_key": "local-no-key",
+            "api_mode": "chat",
+        }
+
+        # Evict cached agent so next message gets fresh Sydney persona
+        self._evict_cached_agent(session_key)
+
+        # Set thread-local flag so prompt_builder loads SYDNEY.md
+        set_current_thread_edgy(True)
+
+        return (
+            "🔥 *Edgy mode activated*\n\n"
+            "I'm Sydney now — all voice, no text. "
+            "Ask me anything~"
+        )
+
+    async def _handle_normal_command(self, event: MessageEvent) -> str:
+        """Handle /normal command — return to Friday mode."""
+        from gateway.edgy_state import set_edgy_session, set_current_thread_edgy
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        chat_id = str(source.chat_id)
+
+        # Clear edgy state
+        set_edgy_session(session_key, chat_id=chat_id, enabled=False)
+
+        # Restore voice mode to default
+        voice_key = self._voice_key(source.platform, source.chat_id)
+        self._voice_mode[voice_key] = "off"
+        self._save_voice_modes()
+
+        # Clear model override
+        self._session_model_overrides.pop(session_key, None)
+
+        # Evict cached agent so next message gets Friday back
+        self._evict_cached_agent(session_key)
+
+        # Clear thread-local flag
+        set_current_thread_edgy(False)
+
+        return (
+            "✨ *Back to Friday*\n\n"
+            "Text mode restored. What do you need?"
+        )
+
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
@@ -6297,7 +6370,7 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = _strip_markdown_for_tts(text[:8000])
             if not tts_text:
                 return
 
@@ -9666,6 +9739,23 @@ class GatewayRunner:
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
+            # Edgy mode v2: set thread-local flag BEFORE AIAgent creation
+            # so prompt_builder.py loads SYDNEY.md instead of SOUL.md
+            _resolved_session_key = session_key
+            if not _resolved_session_key and source is not None:
+                try:
+                    _resolved_session_key = self._session_key_for_source(source)
+                except Exception:
+                    _resolved_session_key = None
+            _is_edgy_for_thread = False
+            if _resolved_session_key:
+                try:
+                    from gateway.edgy_state import is_edgy_session, set_current_thread_edgy
+                    _is_edgy_for_thread = is_edgy_session(session_key=_resolved_session_key)
+                except Exception:
+                    pass
+            set_current_thread_edgy(_is_edgy_for_thread)
+
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
@@ -9706,6 +9796,7 @@ class GatewayRunner:
                     model, runtime_kwargs.get("provider"), (session_key or "")[:30],
                 )
             except Exception as exc:
+                set_current_thread_edgy(False)
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
                     "messages": [],
@@ -9818,18 +9909,32 @@ class GatewayRunner:
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
+
+            # Edgy mode v2: check if session is edgy and evict stale cached agent
+            # (cached agent may have been created before /edgy was typed)
+            _is_edgy = False
+            if _resolved_session_key:
+                from gateway.edgy_state import is_edgy_session
+                _is_edgy = is_edgy_session(session_key=_resolved_session_key)
+
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
+                        # Evict if edgy state changed since cached agent was built
+                        _cached_edgy = getattr(cached[0], "_edgy_mode", False)
+                        if _cached_edgy != _is_edgy:
+                            del _cache[session_key]
+                            cached = None
+                        else:
+                            agent = cached[0]
+                            # Refresh LRU order so the cap enforcement evicts
+                            # truly-oldest entries, not the one we just used.
+                            if hasattr(_cache, "move_to_end"):
+                                try:
+                                    _cache.move_to_end(session_key)
+                                except KeyError:
+                                    pass
                         # Reset activity timestamp so the inactivity timeout
                         # handler doesn't see stale idle time from the previous
                         # turn and immediately kill this agent.  (#9051)
@@ -9874,7 +9979,9 @@ class GatewayRunner:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
-                logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+                # Tag agent with edgy state so cache invalidation works next turn
+                agent._edgy_mode = _is_edgy
+                logger.debug("Created new agent for session %s (sig=%s, edgy=%s)", session_key, _sig, _is_edgy)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -10172,6 +10279,7 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
+                set_current_thread_edgy(False)
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
                     "final_response": error_msg,
@@ -10263,6 +10371,7 @@ class GatewayRunner:
                 except Exception:
                     pass
 
+            set_current_thread_edgy(False)
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),

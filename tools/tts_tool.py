@@ -137,6 +137,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "mistral": 4000,      # conservative; no published per-request cap
     "gemini": 5000,       # Gemini TTS caps at ~8k input tokens / ~655s audio
     "elevenlabs": 10000,  # fallback when model-aware lookup can't resolve (multilingual_v2)
+    "chatterbox": 8000,   # mlx-audio/chatterbox-turbo char cap
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
 }
@@ -546,9 +547,52 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     return output_path
 
 
-# ===========================================================================
+# ============================================================================
+# Provider: Sydney/Chatterbox (local mlx-audio via sydney_tts_server on :9001)
+# ============================================================================
+def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using Sydney/Chatterbox TTS via the local sydney_tts_server.
+
+    The server (sydney_tts_server.py on port 9001) wraps mlx_audio.tts.generate CLI
+    and applies Sydney's voice reference for voice cloning.
+
+    This is NOT the Python API (ChatterboxTurboTTS.from_local()) which produces hiss.
+    """
+    import requests
+
+    ch_config = tts_config.get("chatterbox", {})
+    # Allow override: tts.sydney.url or tts.chatterbox.url
+    base_url = ch_config.get("url", tts_config.get("sydney", {}).get("url", "http://localhost:9001/v1/audio/speech"))
+    model = ch_config.get("model", "chatterbox-turbo")
+
+    # Server returns WAV; we may need to convert to target format
+    want_opus = output_path.endswith(".ogg")
+
+    payload = {
+        "model": model,
+        "input": text,
+        "response_format": "opus" if want_opus else "wav",
+    }
+
+    response = requests.post(base_url, json=payload, timeout=120)
+    if response.status_code != 200:
+        raise RuntimeError(f"Sydney TTS server returned {response.status_code}: {response.text}")
+
+    audio_data = response.content
+    if not audio_data:
+        raise RuntimeError("Sydney TTS server returned empty audio")
+
+    # Write output
+    with open(output_path, "wb") as f:
+        f.write(audio_data)
+
+    return output_path
+
+
+# ============================================================================
 # Provider: Mistral (Voxtral TTS)
-# ===========================================================================
+# ============================================================================
 def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate audio using Mistral Voxtral TTS API.
 
@@ -968,7 +1012,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "gemini", "chatterbox"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -1048,6 +1092,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with KittenTTS (local, ~25MB)...")
             _generate_kittentts(text, file_str, tts_config)
 
+        elif provider in ("chatterbox", "sydney"):
+            logger.info("Generating speech with Sydney/Chatterbox TTS (local mlx-audio)...")
+            _generate_chatterbox_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -1092,7 +1140,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral", "gemini"):
+        elif provider in ("elevenlabs", "openai", "mistral", "gemini", "chatterbox", "sydney"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)

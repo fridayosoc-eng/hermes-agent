@@ -1,0 +1,40 @@
+#!/bin/bash
+# Hindsight daemon wrapper for launchd
+# Dynamically reads keys from hermes .env — no hardcoded secrets
+# Survives API key rotations and Hermes updates
+
+set -euo pipefail
+
+HERMES_DIR="/Users/fridayos/.hermes"
+AGENT_DIR="${HERMES_DIR}/hermes-agent"
+ENV_FILE="${HERMES_DIR}/.env"
+
+cd "${AGENT_DIR}"
+
+# Source hermes .env (has MINIMAX_TOKEN_PLAN_KEY)
+if [ -f "${ENV_FILE}" ]; then
+    set -a
+    source "${ENV_FILE}"
+    set +a
+fi
+
+# Set Hindsight LLM config from hermes env
+# Uses MINIMAX_TOKEN_PLAN_KEY which is the coding-plan key with VLM quota
+export HINDSIGHT_API_LLM_PROVIDER="minimax"
+export HINDSIGHT_API_LLM_MODEL="MiniMax-M2.7"
+export HINDSIGHT_API_LLM_API_KEY="${MINIMAX_TOKEN_PLAN_KEY:-}"
+export HINDSIGHT_API_LOG_LEVEL="info"
+
+# Validate key is present
+if [ -z "${HINDSIGHT_API_LLM_API_KEY}" ]; then
+    echo "ERROR: MINIMAX_TOKEN_PLAN_KEY not set in ${ENV_FILE}" >&2
+    exit 1
+fi
+
+# Activate venv and start daemon
+source venv/bin/activate
+exec python3.11 -m hindsight_api.main \
+    --host 127.0.0.1 \
+    --port 9177 \
+    --idle-timeout 0 \
+    --log-level info

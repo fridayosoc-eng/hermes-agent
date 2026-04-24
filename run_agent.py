@@ -4072,12 +4072,30 @@ class AIAgent:
         #   7. Platform-specific formatting hint
 
         # Try SOUL.md as primary identity (unless context files are skipped)
+        # Edgy mode: load SYDNEY.md instead of SOUL.md
         _soul_loaded = False
         if not self.skip_context_files:
-            _soul_content = load_soul_md()
-            if _soul_content:
-                prompt_parts = [_soul_content]
-                _soul_loaded = True
+            _is_edgy = False
+            try:
+                from gateway.edgy_state import is_current_thread_edgy
+                _is_edgy = is_current_thread_edgy()
+            except Exception:
+                pass
+            if _is_edgy:
+                _sydney_path = get_hermes_home() / "SYDNEY.md"
+                if _sydney_path.exists():
+                    try:
+                        _sydney_content = _sydney_path.read_text(encoding="utf-8").strip()
+                        if _sydney_content:
+                            prompt_parts = [_sydney_content]
+                            _soul_loaded = True
+                    except Exception:
+                        pass
+            if not _soul_loaded:
+                _soul_content = load_soul_md()
+                if _soul_content:
+                    prompt_parts = [_soul_content]
+                    _soul_loaded = True
 
         if not _soul_loaded:
             # Fallback to hardcoded identity

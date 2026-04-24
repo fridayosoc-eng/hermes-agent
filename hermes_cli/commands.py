@@ -127,6 +127,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("edgy", "Activate Sydney Sweeney edgy mode — voice only, NSFW persona", "Configuration"),
+    CommandDef("normal", "Return to normal Friday mode", "Configuration"),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
