@@ -4800,6 +4800,10 @@ class GatewayRunner:
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
+                # In voice_only mode, suppress the text reply — Sydney speaks only
+                _vk = self._voice_key(event.source.platform, event.source.chat_id)
+                if self._voice_mode.get(_vk) == "voice_only":
+                    response = ""
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -6335,7 +6339,7 @@ class GatewayRunner:
 
         should = (
             (voice_mode == "all")
-            or (voice_mode == "voice_only" and is_voice_input)
+            or (voice_mode == "voice_only")
         )
         if not should:
             return False
@@ -6374,11 +6378,11 @@ class GatewayRunner:
             if not tts_text:
                 return
 
-            # Use .mp3 extension so edge-tts conversion to opus works correctly.
-            # The TTS tool may convert to .ogg — use file_path from result.
+            # Use .ogg extension — Telegram sends it as a playable voice bubble.
+            # The TTS tool may convert format — use file_path from result.
             audio_path = os.path.join(
                 tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.mp3",
+                f"tts_reply_{_uuid.uuid4().hex[:12]}.ogg",
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
