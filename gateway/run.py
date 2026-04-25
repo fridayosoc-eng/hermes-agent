@@ -661,6 +661,10 @@ class GatewayRunner:
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
 
+        # Limit concurrent agent sessions to prevent thread/instance flood.
+        # A flood of concurrent users would otherwise spawn unlimited agents.
+        self._concurrent_semaphore: asyncio.Semaphore = asyncio.Semaphore(8)
+
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
         # system prompt (including memory) every turn — breaking prefix cache
@@ -3873,9 +3877,15 @@ class GatewayRunner:
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
+        # ── Global concurrency cap ─────────────────────────────────────
+        # Prevent unbounded thread/agent spawning from a flood of concurrent
+        # users.  acquire blocks new sessions until a slot frees up.
+        await self._concurrent_semaphore.acquire()
+
         try:
             return await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
         finally:
+            self._concurrent_semaphore.release()
             # If _run_agent replaced the sentinel with a real agent and
             # then cleaned it up, this is a no-op.  If we exited early
             # (exception, command fallthrough, etc.) the sentinel must
