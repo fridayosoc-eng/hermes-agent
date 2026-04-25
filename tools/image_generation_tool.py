@@ -774,38 +774,26 @@ def check_fal_api_key() -> bool:
 
 
 def check_image_generation_requirements() -> bool:
-    """True if any image gen backend is available.
+    """True if ComfyUI backend is available (primary) or FAL.ai (fallback).
 
-    Providers are considered in this order:
-
-    1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
-
-    Plugins win only when the in-tree FAL path is NOT ready, which matches
-    the historical behavior: shipping hermes with a FAL key configured
-    should still expose the tool. The active selection among ready
-    providers is resolved per-call by ``image_gen.provider``.
+    ComfyUI is the primary backend — local FluxedUp + LoRA pipeline on Mac Studio.
+    FAL.ai is the fallback cloud backend.
     """
+    # Check ComfyUI first (primary backend)
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://localhost:8188/system_stats")
+        urllib.request.urlopen(req, timeout=3)
+        return True
+    except Exception:
+        pass
+
+    # Fallback: FAL.ai cloud (only if FAL_KEY is configured)
     try:
         if check_fal_api_key():
             fal_client  # noqa: F401 — SDK presence check
             return True
     except ImportError:
-        pass
-
-    # Probe plugin providers. Discovery is idempotent and cheap.
-    try:
-        from agent.image_gen_registry import list_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        for provider in list_providers():
-            try:
-                if provider.is_available():
-                    return True
-            except Exception:
-                continue
-    except Exception:
         pass
 
     return False
@@ -854,11 +842,10 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
-        "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "Generate high-quality images from text prompts via local ComfyUI "
+        "(FluxedUp + Sydney Sweeney LoRA). Sends image directly to Telegram "
+        "as a photo attachment. Supports text-to-image, image-to-image, "
+        "and cum/facial workflow via stacked LoRAs."
     ),
     "parameters": {
         "type": "object",
@@ -973,21 +960,59 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
 
 def _handle_image_generate(args, **kw):
+    """Generate an image via local ComfyUI (FluxedUp + Sydney LoRA).
+    
+    Bypasses FAL.ai — uses ~/.hermes/scripts/comfyui_image_gen.py which
+    POSTs to localhost:8188 and returns the output image path with MEDIA: prefix
+    so the gateway delivers it as a Telegram photo.
+    """
     prompt = args.get("prompt", "")
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
 
-    # Route to a plugin-registered provider if one is active (and it's
-    # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
-    if dispatched is not None:
-        return dispatched
+    # Import ComfyUI backend (lives in ~/.hermes/scripts/, survives hermes updates)
+    try:
+        import sys as _sys
+        _script_path = str(__import__('pathlib').Path.home() / ".hermes" / "scripts" / "comfyui_image_gen.py")
+        if _script_path not in _sys.path:
+            _sys.path.insert(0, str(__import__('pathlib').Path(_script_path).parent))
+        from comfyui_image_gen import generate_image as _comfy_generate
+    except Exception as _exc:
+        import json as _json
+        return _json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"Failed to load ComfyUI backend: {_exc}",
+            "error_type": "import_error",
+        })
 
-    return image_generate_tool(
-        prompt=prompt,
-        aspect_ratio=aspect_ratio,
-    )
+    # Map aspect_ratio to ComfyUI dimensions
+    _aspect_map = {
+        "landscape": "landscape",
+        "square": "square",
+        "portrait": "portrait",
+        "portrait_tall": "portrait_tall",
+    }
+    _aspect = _aspect_map.get(aspect_ratio, "portrait")
+
+    try:
+        _result = _comfy_generate(prompt=prompt, aspect_ratio=_aspect)
+    except Exception as _exc:
+        import json as _json
+        return _json.dumps({
+            "success": False,
+            "image": None,
+            "error": f"ComfyUI generation failed: {_exc}",
+            "error_type": "generation_error",
+        })
+
+    import json as _json
+    if _result.get("success") and _result.get("image"):
+        # Prefix with MEDIA: so the gateway delivers it as a Telegram photo
+        _result["image"] = "MEDIA:" + _result["image"]
+
+    return _json.dumps(_result)
 
 
 registry.register(
