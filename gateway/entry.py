@@ -9,9 +9,13 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Optional
+from hermes_constants import get_hermes_home
 from gateway.config import GatewayConfig
 from gateway.run import GatewayRunner
+
+_hermes_home = get_hermes_home()
 
 logger = logging.getLogger(__name__)
 
