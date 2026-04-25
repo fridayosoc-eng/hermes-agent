@@ -845,6 +845,26 @@ class GatewayRunner:
             if mode == "off" and key.startswith(prefix)
         )
 
+    def _schedule_tts_warmup(self) -> None:
+        """Fire a background thread to pre-warm the Sydney TTS server.
+
+        mlx-audio (chatterbox) takes ~30-60s to load the model from disk on
+        first request. By warming it right after gateway startup, the first
+        actual voice reply won't have that cold-start delay.
+
+        Silently no-ops if the TTS server is unreachable or non-chatterbox.
+        """
+        import threading
+        def _do_warmup():
+            try:
+                import requests as _rq
+                _health = _rq.get("http://localhost:9001/health", timeout=3)
+                if _health.status_code == 200:
+                    _rq.post("http://localhost:9001/warmup", timeout=5)
+            except Exception:
+                pass
+        threading.Thread(target=_do_warmup, daemon=True).start()
+
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
 
@@ -2147,7 +2167,13 @@ class GatewayRunner:
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
                 }
-        
+
+        # Pre-warm Sydney TTS server after platform connections succeed.
+        # mlx-audio takes ~30-60s on first load; warming it in the background
+        # means the first voice request won't suffer that cold-start penalty.
+        # Only fires when chatterbox/sydney TTS is the active provider.
+        self._schedule_tts_warmup()
+
         if connected_count == 0:
             if startup_nonretryable_errors:
                 reason = "; ".join(startup_nonretryable_errors)
@@ -6372,12 +6398,12 @@ class GatewayRunner:
         if not text:
             return []
 
-        hook_keywords_pat = _re.compile(
+        hook_keywords_pat = re.compile(
             r"(?:daddy|sir|johnny|want more|keep going|want to know|should i|"
             r"do you want|want me|tell me|know what happened)",
-            _re.IGNORECASE,
+            re.IGNORECASE,
         )
-        bare_ellipsis_pat = _re.compile(r"^\.\.{3,5}\s*$")
+        bare_ellipsis_pat = re.compile(r"^\.\.{3,5}\s*$")
 
         def is_hook(sentence: str) -> bool:
             s = sentence.strip()
@@ -6395,9 +6421,9 @@ class GatewayRunner:
                 current_len = 0
 
         # Split on sentence-end + [tag] boundary to keep [gasp] attached to prior text
-        sentences = _re.split(r"(?<=[.!?])\s+(?=\[)", text)
+        sentences = re.split(r"(?<=[.!?])\s+(?=\[)", text)
         if len(sentences) == 1:
-            sentences = _re.split(r"(?<=[.!?])\s+", text)
+            sentences = re.split(r"(?<=[.!?])\s+", text)
 
         for sent in sentences:
             sent = sent.strip()
