@@ -98,9 +98,8 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
-
-_DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
-_DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
+# _DOCKER_VOLUME_SPEC_RE and _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS live in
+# gateway/_infra.py — re-exported above via the _infra import block.
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -295,6 +294,13 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from gateway._infra import (
+    _platform_config_key,
+    _parse_session_key,
+    _format_gateway_process_notification,
+    _DOCKER_VOLUME_SPEC_RE,
+    _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS,
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -480,9 +486,11 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     return None
 
 
+# _platform_config_key — moved to gateway/_infra.py
 def _platform_config_key(platform: "Platform") -> str:
-    """Map a Platform enum to its config.yaml key (LOCAL→"cli", rest→enum value)."""
-    return "cli" if platform == Platform.LOCAL else platform.value
+    """Delegate to _infra to keep the import path stable."""
+    from gateway._infra import _platform_config_key as _fn
+    return _fn(platform)
 
 
 def _load_gateway_config() -> dict:
@@ -541,57 +549,18 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+# _parse_session_key — moved to gateway/_infra.py
 def _parse_session_key(session_key: str) -> "dict | None":
-    """Parse a session key into its component parts.
-
-    Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
-    Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
-    optionally ``thread_id`` keys, or None if the key doesn't match.
-
-    The 6th element is only returned as ``thread_id`` for chat types where
-    it is unambiguous (``dm`` and ``thread``).  For group/channel sessions
-    the suffix may be a user_id (per-user isolation) rather than a
-    thread_id, so we leave ``thread_id`` out to avoid mis-routing.
-    """
-    parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
-        result = {
-            "platform": parts[2],
-            "chat_type": parts[3],
-            "chat_id": parts[4],
-        }
-        if len(parts) > 5 and parts[3] in ("dm", "thread"):
-            result["thread_id"] = parts[5]
-        return result
-    return None
+    """Delegate to _infra to keep the import path stable."""
+    from gateway._infra import _parse_session_key as _fn
+    return _fn(session_key)
 
 
+# _format_gateway_process_notification — moved to gateway/_infra.py
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [SYSTEM:] message."""
-    evt_type = evt.get("type", "completion")
-    _sid = evt.get("session_id", "unknown")
-    _cmd = evt.get("command", "unknown")
-
-    if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
-
-    if evt_type == "watch_match":
-        _pat = evt.get("pattern", "?")
-        _out = evt.get("output", "")
-        _sup = evt.get("suppressed", 0)
-        text = (
-            f"[SYSTEM: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
-        if _sup:
-            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
-        return text
-
-    return None
+    """Delegate to _infra to keep the import path stable."""
+    from gateway._infra import _format_gateway_process_notification as _fn
+    return _fn(evt)
 
 
 class GatewayRunner:
