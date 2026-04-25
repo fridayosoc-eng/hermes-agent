@@ -6345,63 +6345,211 @@ class GatewayRunner:
 
         return True
 
+    # ── Voice chunking ─────────────────────────────────────────────────────────
+    # Sydney's story mode writes ~600-800 char segments ending with a hook
+    # ("...Do you want to know what happened next, Daddy?").  The gateway splits
+    # on these natural pause points so each segment becomes its own TTS bubble,
+    # giving Johnny a chance to say "continue" between segments.
+
+    _VOICE_CHUNK_MAX = 900   # chars per TTS bubble (keeps audio under ~60s)
+    _VOICE_CHUNK_MIN = 400   # don't split tiny stubs; pad onto next segment
+    _VOICE_SEND_DELAY = 0.6  # seconds between sequential voice bubbles
+
+    def _chunkify_voice_text(self, text: str) -> list[str]:
+        """Split story text into Telegram-voice-safe chunks at natural pause points.
+
+        Strategy:
+        1. Accumulate sentences into chunks up to _VOICE_CHUNK_MAX (900 chars)
+        2. When a HOOK sentence is encountered ("? ... Daddy? / want more? etc."),
+           emit the accumulated chunk BEFORE the hook, so the hook starts the
+           next chunk (Sydney pauses for Johnny's "continue").
+        3. When the accumulated chunk exceeds MAX, emit it and continue.
+        4. Bare ellipsis fragments ("...") from sentence splitting are merged
+           into the previous chunk, not treated as standalone content.
+        5. Small remainders (<400 chars) at end are appended to the last chunk
+           rather than sent as a tiny orphan bubble.
+        """
+        if not text:
+            return []
+
+        hook_keywords_pat = _re.compile(
+            r"(?:daddy|sir|johnny|want more|keep going|want to know|should i|"
+            r"do you want|want me|tell me|know what happened)",
+            _re.IGNORECASE,
+        )
+        bare_ellipsis_pat = _re.compile(r"^\.\.{3,5}\s*$")
+
+        def is_hook(sentence: str) -> bool:
+            s = sentence.strip()
+            return "?" in s and bool(hook_keywords_pat.search(s))
+
+        result: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        def emit():
+            nonlocal current, current_len
+            if current:
+                result.append(" ".join(current))
+                current = []
+                current_len = 0
+
+        # Split on sentence-end + [tag] boundary to keep [gasp] attached to prior text
+        sentences = _re.split(r"(?<=[.!?])\s+(?=\[)", text)
+        if len(sentences) == 1:
+            sentences = _re.split(r"(?<=[.!?])\s+", text)
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            is_bare_ellipsis = bool(bare_ellipsis_pat.match(sent))
+            hook = is_hook(sent)
+            sent_len = len(sent)
+
+            # Bare ellipsis fragments: merge into current chunk, don't start new one
+            if is_bare_ellipsis:
+                if current:
+                    current.append(sent)
+                    current_len += sent_len + 1
+                # else: orphan bare ellipsis at start — skip it
+                continue
+
+            # Would adding this sentence push us over max?
+            exceeds_max = (current_len + sent_len + 1 > self._VOICE_CHUNK_MAX)
+
+            if exceeds_max and current:
+                # Hard wrap: flush current, then deal with the oversized sentence
+                emit()
+                # If the sentence itself exceeds max, split it mid-word
+                while sent_len > self._VOICE_CHUNK_MAX:
+                    chunk = sent[: self._VOICE_CHUNK_MAX]
+                    split_at = chunk.rfind(" ")
+                    if split_at < self._VOICE_CHUNK_MIN:
+                        split_at = chunk.rfind("-")
+                    if split_at < self._VOICE_CHUNK_MIN:
+                        split_at = self._VOICE_CHUNK_MAX
+                    result.append(chunk[:split_at].strip())
+                    sent = sent[split_at:].strip()
+                    sent_len = len(sent)
+                    # Re-evaluate hook status for the remainder
+                    hook = is_hook(sent)
+
+            # Hook sentence: emit accumulated chunk BEFORE the hook if the chunk is
+            # large enough (>=300 chars) — natural pause point in long narrative.
+            # Small chunks keep accumulating; the hook's own emit handles the split.
+            if hook and current and current_len >= 300:
+                emit()
+
+            # Now add the sentence (either it fit, or we're starting fresh after a flush)
+            if sent_len > self._VOICE_CHUNK_MAX and not current:
+                # Lone sentence too long — split and add remainder
+                while sent_len > self._VOICE_CHUNK_MAX:
+                    chunk = sent[: self._VOICE_CHUNK_MAX]
+                    split_at = chunk.rfind(" ")
+                    if split_at < self._VOICE_CHUNK_MIN:
+                        split_at = chunk.rfind("-")
+                    if split_at < self._VOICE_CHUNK_MIN:
+                        split_at = self._VOICE_CHUNK_MAX
+                    result.append(chunk[:split_at].strip())
+                    sent = sent[split_at:].strip()
+                    sent_len = len(sent)
+                if sent_len > 0:
+                    current.append(sent)
+                    current_len += sent_len + 1
+            elif sent_len > 0:
+                current.append(sent)
+                current_len += sent_len + 1
+                # If this sentence is a hook, emit immediately (hook ends the segment)
+                if hook:
+                    emit()
+
+        # Flush remainder
+        if current:
+            _rem = " ".join(current).strip()
+            if len(_rem) >= self._VOICE_CHUNK_MIN or not result:
+                result.append(_rem)
+            elif result:
+                # Small remainder — pad onto last chunk rather than orphan it
+                result[-1] = result[-1] + " " + _rem
+
+        return result
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+        """Generate TTS audio and send as one or more voice messages.
+
+        In story mode Sydney writes ~600-800 char segments ending with a hook.
+        Each segment becomes its own Telegram voice bubble, giving Johnny a
+        chance to say "continue" before the next segment plays.
+        """
         import uuid as _uuid
-        audio_path = None
-        actual_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:8000])
-            if not tts_text:
-                return
-
-            # Use .ogg extension — Telegram sends it as a playable voice bubble.
-            # The TTS tool may convert format — use file_path from result.
-            audio_path = os.path.join(
-                tempfile.gettempdir(), "hermes_voice",
-                f"tts_reply_{_uuid.uuid4().hex[:12]}.ogg",
-            )
-            os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-
-            result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=tts_text, output_path=audio_path
-            )
-            result = json.loads(result_json)
-
-            # Use the actual file path from result (may differ after opus conversion)
-            actual_path = result.get("file_path", audio_path)
-            if not result.get("success") or not os.path.isfile(actual_path):
-                logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+            chunks = self._chunkify_voice_text(text)
+            if not chunks:
                 return
 
             adapter = self.adapters.get(event.source.platform)
+            guild_id = self._get_guild_id(event) if adapter else None
+            voice_key = self._voice_key(event.source.platform, event.source.chat_id)
+            is_voice_only = self._voice_mode.get(voice_key) == "voice_only"
 
-            # If connected to a voice channel, play there instead of sending a file
-            guild_id = self._get_guild_id(event)
-            if (guild_id
-                    and hasattr(adapter, "play_in_voice_channel")
-                    and hasattr(adapter, "is_in_voice_channel")
-                    and adapter.is_in_voice_channel(guild_id)):
-                await adapter.play_in_voice_channel(guild_id, actual_path)
-            elif adapter and hasattr(adapter, "send_voice"):
-                send_kwargs: Dict[str, Any] = {
-                    "chat_id": event.source.chat_id,
-                    "audio_path": actual_path,
-                    "reply_to": event.message_id,
-                }
-                if event.source.thread_id:
-                    send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
-                await adapter.send_voice(**send_kwargs)
+            for i, chunk in enumerate(chunks):
+                tts_text = _strip_markdown_for_tts(chunk)
+                if not tts_text:
+                    continue
+
+                audio_path = os.path.join(
+                    tempfile.gettempdir(), "hermes_voice",
+                    f"tts_part{i + 1}_{_uuid.uuid4().hex[:12]}.ogg",
+                )
+                os.makedirs(os.path.dirname(audio_path), exist_ok=True)
+
+                try:
+                    result_json = await asyncio.to_thread(
+                        text_to_speech_tool, text=tts_text, output_path=audio_path
+                    )
+                    result = json.loads(result_json)
+                    actual_path = result.get("file_path", audio_path)
+
+                    if not result.get("success") or not os.path.isfile(actual_path):
+                        logger.warning("Auto voice reply TTS failed (part %d): %s",
+                                       i + 1, result.get("error"))
+                        continue
+
+                    if (guild_id
+                            and hasattr(adapter, "play_in_voice_channel")
+                            and hasattr(adapter, "is_in_voice_channel")
+                            and adapter.is_in_voice_channel(guild_id)):
+                        await adapter.play_in_voice_channel(guild_id, actual_path)
+                    elif adapter and hasattr(adapter, "send_voice"):
+                        send_kwargs: Dict[str, Any] = {
+                            "chat_id": event.source.chat_id,
+                            "audio_path": actual_path,
+                            "reply_to": event.message_id,
+                        }
+                        if event.source.thread_id:
+                            send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
+                        await adapter.send_voice(**send_kwargs)
+
+                    # Delay between segments so Telegram sequences them in order.
+                    # Skip delay on last chunk or in voice_only mode (user needs
+                    # to actively respond before next segment).
+                    if i < len(chunks) - 1 and not is_voice_only:
+                        await asyncio.sleep(self._VOICE_SEND_DELAY)
+
+                finally:
+                    for p in {audio_path, actual_path}:
+                        if p:
+                            try:
+                                os.unlink(p)
+                            except OSError:
+                                pass
+
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
-        finally:
-            for p in {audio_path, actual_path} - {None}:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
 
     async def _deliver_media_from_response(
         self,
