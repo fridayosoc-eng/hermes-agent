@@ -272,11 +272,13 @@ def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, 
         "model": model, "input": text,
         "response_format": "opus" if want_opus else "wav",
     }
-    # Retry up to 3 times with backoff for transient TTS server failures
+    # Chatterbox Turbo on Apple Silicon takes ~35s for typical responses.
+    # Use 60s timeout to avoid cutting off valid generations, with 1 retry
+    # for genuine transient failures (server restart, cold start).
     last_error = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            response = _rq.post(base_url, json=payload, timeout=30)
+            response = _rq.post(base_url, json=payload, timeout=60)
             if response.status_code == 200 and response.content:
                 with open(output_path, "wb") as f:
                     f.write(response.content)
@@ -285,14 +287,14 @@ def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, 
                 f"Sydney TTS server returned {response.status_code}: {response.text[:200]}"
             )
         except _rq.Timeout:
-            last_error = RuntimeError("Sydney TTS server timed out after 30s")
+            last_error = RuntimeError("Sydney TTS server timed out after 60s")
         except _rq.ConnectionError:
             last_error = RuntimeError("Sydney TTS server connection refused (port 9001)")
         except Exception as exc:
             last_error = RuntimeError(f"Sydney TTS error: {exc}")
-        if attempt < 2:
-            _time.sleep(2 ** attempt)  # 1s, 2s backoff
-    raise last_error or RuntimeError("Sydney TTS generation failed after 3 attempts")
+        if attempt < 1:
+            _time.sleep(3)
+    raise last_error or RuntimeError("Sydney TTS generation failed after 2 attempts")
 
 # -----------------------------------------------------------------------
 # Provider: Mistral (Voxtral TTS)
