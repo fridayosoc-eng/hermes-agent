@@ -2,7 +2,19 @@
 
 **Date:** 2026-04-26
 **Related:** AUDIT-2026-04-26.md
-**Branch:** johnny (implementation on feature branch)
+**Branch:** audit/hardening-and-personas (on feature branch from johnny)
+**Status:** Phases 1–6 COMPLETE
+
+## Completion Summary
+
+| Phase | Status | Commit | Files |
+|---|---|---|---|
+| 1: Critical Quick Wins | DONE | 231da6cd | 11 files |
+| 2: Persona System | DONE | a66bd637 | 11 files |
+| 3: Image Gen Stabilization | DONE | f85efbdf | merged with Phases 4-5 |
+| 4: TTS Hardening | DONE | f85efbdf | merged with Phases 3,5 |
+| 5: System Hardening | DONE | f85efbdf | 6 files |
+| 6: Cleanup | DONE | (this commit) | plan updates |
 **Philosophy:** Incremental phases. Each phase is independently deployable and testable. EDGY mode changes are especially careful — the persona system is core value.
 
 ---
