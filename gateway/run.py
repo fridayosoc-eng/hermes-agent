@@ -651,6 +651,10 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+
+        # Persona system — replaces edgy_state.py with clean per-session persona tracking
+        from gateway.personas import PersonaManager
+        self._personas = PersonaManager()
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -5928,34 +5932,35 @@ class GatewayRunner:
 
     async def _handle_edgy_command(self, event: MessageEvent) -> str:
         """Handle /edgy command — activate Sydney Sweeney edgy mode."""
-        from gateway.edgy_state import set_edgy_session, set_current_thread_edgy
-
         source = event.source
         session_key = self._session_key_for_source(source)
-        chat_id = str(source.chat_id)
 
-        # Mark session as edgy
-        set_edgy_session(session_key, chat_id=chat_id, enabled=True)
+        # Activate Sydney persona and health-check the local LLM
+        persona = self._personas.activate(session_key, "sydney")
+        ok, msg = persona.health_check()
+        if not ok:
+            self._personas.deactivate(session_key)
+            return (
+                "⚠ *Cannot activate Edgy mode*\n\n"
+                f"Local LLM unreachable: {msg}\n"
+                "Make sure oMLX is running on port 8000."
+            )
 
-        # Set voice-only mode for this chat
+        # Apply persona-driven voice mode and model override
         voice_key = self._voice_key(source.platform, source.chat_id)
-        self._voice_mode[voice_key] = "voice_only"
+        self._voice_mode[voice_key] = persona.voice_mode()
         self._save_voice_modes()
-
-        # Set model override to oMLX (Qwen3.6 Heretic)
-        self._session_model_overrides[session_key] = {
-            "model": "Qwen3.6-35B-A3B-Heretic-MLX-mxfp8",
-            "provider": "custom",
-            "base_url": "http://127.0.0.1:8000/v1",
-            "api_key": "local-no-key",
-            "api_mode": "chat",
-        }
+        self._session_model_overrides[session_key] = persona.model_override()
 
         # Evict cached agent so next message gets fresh Sydney persona
         self._evict_cached_agent(session_key)
 
-        # Set thread-local flag so prompt_builder loads SYDNEY.md
-        set_current_thread_edgy(True)
+        # Backwards compat: set thread-local for prompt_builder
+        try:
+            from gateway.edgy_state import set_current_thread_edgy
+            set_current_thread_edgy(True)
+        except ImportError:
+            pass
 
         return (
             "🔥 *Edgy mode activated*\n\n"
@@ -5965,14 +5970,11 @@ class GatewayRunner:
 
     async def _handle_normal_command(self, event: MessageEvent) -> str:
         """Handle /normal command — return to Friday mode."""
-        from gateway.edgy_state import set_edgy_session, set_current_thread_edgy
-
         source = event.source
         session_key = self._session_key_for_source(source)
-        chat_id = str(source.chat_id)
 
-        # Clear edgy state
-        set_edgy_session(session_key, chat_id=chat_id, enabled=False)
+        # Deactivate persona — reverts to Friday
+        self._personas.deactivate(session_key)
 
         # Restore voice mode to default
         voice_key = self._voice_key(source.platform, source.chat_id)
@@ -5985,8 +5987,12 @@ class GatewayRunner:
         # Evict cached agent so next message gets Friday back
         self._evict_cached_agent(session_key)
 
-        # Clear thread-local flag
-        set_current_thread_edgy(False)
+        # Backwards compat: clear thread-local
+        try:
+            from gateway.edgy_state import set_current_thread_edgy
+            set_current_thread_edgy(False)
+        except ImportError:
+            pass
 
         return (
             "✨ *Back to Friday*\n\n"
@@ -6381,32 +6387,36 @@ class GatewayRunner:
     _VOICE_CHUNK_MIN = 400   # don't split tiny stubs; pad onto next segment
     _VOICE_SEND_DELAY = 0.6  # seconds between sequential voice bubbles
 
-    def _chunkify_voice_text(self, text: str) -> list[str]:
+    def _chunkify_voice_text(self, text: str, persona=None) -> list[str]:
         """Split story text into Telegram-voice-safe chunks at natural pause points.
+
+        When a persona provides voice_chunk_keywords, hook-based splitting is used.
+        Otherwise, only length-based splitting applies.
 
         Strategy:
         1. Accumulate sentences into chunks up to _VOICE_CHUNK_MAX (900 chars)
-        2. When a HOOK sentence is encountered ("? ... Daddy? / want more? etc."),
-           emit the accumulated chunk BEFORE the hook, so the hook starts the
-           next chunk (Sydney pauses for Johnny's "continue").
+        2. When a HOOK sentence is encountered (if persona provides keywords),
+           emit the accumulated chunk BEFORE the hook.
         3. When the accumulated chunk exceeds MAX, emit it and continue.
-        4. Bare ellipsis fragments ("...") from sentence splitting are merged
-           into the previous chunk, not treated as standalone content.
-        5. Small remainders (<400 chars) at end are appended to the last chunk
-           rather than sent as a tiny orphan bubble.
+        4. Bare ellipsis fragments ("...") are merged into the previous chunk.
+        5. Small remainders (<400 chars) at end are appended to the last chunk.
         """
         if not text:
             return []
 
-        hook_keywords_pat = re.compile(
-            r"(?:daddy|sir|johnny|want more|keep going|want to know|should i|"
-            r"do you want|want me|tell me|know what happened)",
-            re.IGNORECASE,
-        )
+        hook_keywords = persona.voice_chunk_keywords() if persona else None
+        hook_keywords_pat = None
+        if hook_keywords:
+            hook_keywords_pat = re.compile(
+                r"(?:" + "|".join(re.escape(k) for k in hook_keywords) + ")",
+                re.IGNORECASE,
+            )
         bare_ellipsis_pat = re.compile(r"^\.\.{3,5}\s*$")
 
         def is_hook(sentence: str) -> bool:
             s = sentence.strip()
+            if hook_keywords_pat is None:
+                return False
             return "?" in s and bool(hook_keywords_pat.search(s))
 
         result: list[str] = []
@@ -6513,7 +6523,12 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            chunks = self._chunkify_voice_text(text)
+            chunks = self._chunkify_voice_text(
+                text,
+                persona=self._personas.current(
+                    self._session_key_for_source(event.source)
+                ) if hasattr(event, 'source') and event.source else None,
+            )
             if not chunks:
                 return
 
@@ -9896,22 +9911,22 @@ class GatewayRunner:
             # `_resolve_turn_agent_config(message, …)`.
             nonlocal message
 
-            # Edgy mode v2: set thread-local flag BEFORE AIAgent creation
-            # so prompt_builder.py loads SYDNEY.md instead of SOUL.md
+            # Persona system: determine active persona for prompt_builder
             _resolved_session_key = session_key
             if not _resolved_session_key and source is not None:
                 try:
                     _resolved_session_key = self._session_key_for_source(source)
                 except Exception:
                     _resolved_session_key = None
-            _is_edgy_for_thread = False
-            if _resolved_session_key:
-                try:
-                    from gateway.edgy_state import is_edgy_session, set_current_thread_edgy
-                    _is_edgy_for_thread = is_edgy_session(session_key=_resolved_session_key)
-                except Exception:
-                    pass
-            set_current_thread_edgy(_is_edgy_for_thread)
+            _active_persona = self._personas.current(_resolved_session_key) if _resolved_session_key else self._personas._default
+            _is_edgy = _active_persona.name == "sydney"
+
+            # Backwards compat: set thread-local for prompt_builder that still reads it
+            try:
+                from gateway.edgy_state import set_current_thread_edgy
+                set_current_thread_edgy(_is_edgy)
+            except ImportError:
+                pass
 
             # session_key is now set via contextvars in _set_session_env()
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
@@ -10067,20 +10082,17 @@ class GatewayRunner:
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
-            # Edgy mode v2: check if session is edgy and evict stale cached agent
-            # (cached agent may have been created before /edgy was typed)
-            _is_edgy = False
-            if _resolved_session_key:
-                from gateway.edgy_state import is_edgy_session
-                _is_edgy = is_edgy_session(session_key=_resolved_session_key)
+            # Persona-aware cache invalidation:
+            # Evict cached agent if persona changed since last turn
+            _persona_sig = _active_persona.cache_signature()
 
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        # Evict if edgy state changed since cached agent was built
-                        _cached_edgy = getattr(cached[0], "_edgy_mode", False)
-                        if _cached_edgy != _is_edgy:
+                        # Evict if persona changed since cached agent was built
+                        _cached_persona = getattr(cached[0], "_persona_sig", "friday")
+                        if _cached_persona != _persona_sig:
                             del _cache[session_key]
                             cached = None
                         else:
@@ -10136,9 +10148,9 @@ class GatewayRunner:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)
                         self._enforce_agent_cache_cap()
-                # Tag agent with edgy state so cache invalidation works next turn
-                agent._edgy_mode = _is_edgy
-                logger.debug("Created new agent for session %s (sig=%s, edgy=%s)", session_key, _sig, _is_edgy)
+                # Tag agent with persona signature for cache invalidation
+                agent._persona_sig = _persona_sig
+                logger.debug("Created new agent for session %s (sig=%s, persona=%s)", session_key, _sig, _persona_sig)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

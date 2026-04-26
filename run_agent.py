@@ -4072,26 +4072,26 @@ class AIAgent:
         #   7. Platform-specific formatting hint
 
         # Try SOUL.md as primary identity (unless context files are skipped)
-        # Edgy mode: load SYDNEY.md instead of SOUL.md
+        # Persona-aware: load SYDNEY.md when Sydney persona is active
         _soul_loaded = False
         if not self.skip_context_files:
-            _is_edgy = False
+            _persona_name = "friday"
             try:
                 from gateway.edgy_state import is_current_thread_edgy
-                _is_edgy = is_current_thread_edgy()
-            except Exception:
+                if is_current_thread_edgy():
+                    _persona_name = "sydney"
+            except ImportError:
                 pass
-            if _is_edgy:
-                _sydney_path = get_hermes_home() / "SYDNEY.md"
-                if _sydney_path.exists():
-                    try:
-                        _sydney_content = _sydney_path.read_text(encoding="utf-8").strip()
-                        if _sydney_content:
-                            prompt_parts = [_sydney_content]
-                            _soul_loaded = True
-                    except Exception:
-                        pass
-            if not _soul_loaded:
+
+            from agent.persona_loader import load_active_system_prompt
+            _prompt_content = load_active_system_prompt(
+                get_hermes_home(),
+                persona_name=_persona_name,
+            )
+            if _prompt_content:
+                prompt_parts = [_prompt_content]
+                _soul_loaded = True
+            else:
                 _soul_content = load_soul_md()
                 if _soul_content:
                     prompt_parts = [_soul_content]

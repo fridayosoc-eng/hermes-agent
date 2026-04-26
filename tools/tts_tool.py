@@ -554,44 +554,9 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 # ============================================================================
 # Provider: Sydney/Chatterbox (local mlx-audio via sydney_tts_server on :9001)
 # ============================================================================
-def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """
-    Generate audio using Sydney/Chatterbox TTS via the local sydney_tts_server.
-
-    The server (sydney_tts_server.py on port 9001) wraps mlx_audio.tts.generate CLI
-    and applies Sydney's voice reference for voice cloning.
-
-    This is NOT the Python API (ChatterboxTurboTTS.from_local()) which produces hiss.
-    """
-    import requests
-
-    ch_config = tts_config.get("chatterbox", {})
-    # Allow override: tts.sydney.url or tts.chatterbox.url
-    base_url = ch_config.get("url", tts_config.get("sydney", {}).get("url", "http://localhost:9001/v1/audio/speech"))
-    model = ch_config.get("model", "chatterbox-turbo")
-
-    # Server returns WAV; we may need to convert to target format
-    want_opus = output_path.endswith(".ogg")
-
-    payload = {
-        "model": model,
-        "input": text,
-        "response_format": "opus" if want_opus else "wav",
-    }
-
-    response = requests.post(base_url, json=payload, timeout=120)
-    if response.status_code != 200:
-        raise RuntimeError(f"Sydney TTS server returned {response.status_code}: {response.text}")
-
-    audio_data = response.content
-    if not audio_data:
-        raise RuntimeError("Sydney TTS server returned empty audio")
-
-    # Write output
-    with open(output_path, "wb") as f:
-        f.write(audio_data)
-
-    return output_path
+# Canonical implementation lives in tools/tts/providers.py — import from there
+# to avoid maintaining two copies of the same code.
+from tools.tts.providers import _generate_chatterbox_tts as _generate_chatterbox_tts
 
 
 # ============================================================================
