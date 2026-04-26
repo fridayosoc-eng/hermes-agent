@@ -6548,6 +6548,7 @@ class GatewayRunner:
                 )
                 os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
+                actual_path = None
                 try:
                     result_json = await asyncio.to_thread(
                         text_to_speech_tool, text=tts_text, output_path=audio_path
