@@ -1136,7 +1136,7 @@ class AIAgent:
                 if not self.quiet_mode:
                     print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                     if effective_key and len(effective_key) > 12:
-                        print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                        print(f"🔑 Using token: ***...***")
         elif self.api_mode == "bedrock_converse":
             # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
             # Region is extracted from the base_url or defaults to us-east-1.

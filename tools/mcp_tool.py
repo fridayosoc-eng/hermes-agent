@@ -70,6 +70,7 @@ Thread safety:
 """
 
 import asyncio
+import atexit
 import concurrent.futures
 import inspect
 import json
@@ -108,6 +109,17 @@ _mcp_stderr_log_fh: Optional[Any] = None
 _mcp_stderr_log_lock = threading.Lock()
 
 
+def _close_mcp_stderr_log() -> None:
+    """Close the MCP stderr log file handle on process exit."""
+    global _mcp_stderr_log_fh
+    if _mcp_stderr_log_fh is not None and _mcp_stderr_log_fh is not sys.stderr:
+        try:
+            _mcp_stderr_log_fh.close()
+        except Exception:
+            pass
+        _mcp_stderr_log_fh = None
+
+
 def _get_mcp_stderr_log() -> Any:
     """Return a shared append-mode file handle for MCP subprocess stderr.
 
@@ -132,6 +144,7 @@ def _get_mcp_stderr_log() -> Any:
             # Sanity-check: confirm a real fd is available before we commit.
             fh.fileno()
             _mcp_stderr_log_fh = fh
+            atexit.register(_close_mcp_stderr_log)
         except Exception as exc:  # pragma: no cover — best-effort fallback
             logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
             try:

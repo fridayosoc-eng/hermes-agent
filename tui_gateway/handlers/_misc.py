@@ -419,8 +419,9 @@ def _(rid, params: dict) -> dict:
     except ImportError:
         pass
     try:
+        import shlex
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
         )
         return _ok(
             rid,

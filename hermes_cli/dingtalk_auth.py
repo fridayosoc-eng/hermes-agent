@@ -289,6 +289,6 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
     print()
     print_success("  QR scan authorization successful!")
     print_success(f"  Client ID:     {client_id}")
-    print_success(f"  Client Secret: {client_secret[:8]}{'*' * (len(client_secret) - 8)}")
+    print_success(f"  Client Secret: ***{'*' * (len(client_secret) - 3)}")
 
     return client_id, client_secret

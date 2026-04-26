@@ -257,7 +257,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return whether a Telegram inline-button caller may perform gated actions."""
         allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
         if not allowed_csv:
-            return True
+            logger.warning(
+                "TELEGRAM_ALLOWED_USERS not set — denying callback auth for user %s. "
+                "Set TELEGRAM_ALLOWED_USERS in .env with your Telegram user ID(s).",
+                user_id,
+            )
+            return False
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
 

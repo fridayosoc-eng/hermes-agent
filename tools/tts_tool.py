@@ -258,6 +258,10 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
                           result.returncode, result.stderr.decode('utf-8', errors='ignore')[:200])
             return None
         if os.path.exists(ogg_path) and os.path.getsize(ogg_path) > 0:
+            try:
+                os.remove(mp3_path)
+            except OSError:
+                pass
             return ogg_path
     except subprocess.TimeoutExpired:
         logger.warning("ffmpeg OGG conversion timed out after 30s")

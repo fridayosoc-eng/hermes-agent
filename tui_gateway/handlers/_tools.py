@@ -254,9 +254,10 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            import shlex
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                shlex.split(qc.get("command", "")),
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
