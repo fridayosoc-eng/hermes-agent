@@ -961,7 +961,7 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
 
 def _handle_image_generate(args, **kw):
     """Generate an image via local ComfyUI (FluxedUp + Sydney LoRA).
-    
+
     Bypasses FAL.ai — uses ~/.hermes/scripts/comfyui_image_gen.py which
     POSTs to localhost:8188 and returns the output image path with MEDIA: prefix
     so the gateway delivers it as a Telegram photo.
@@ -977,7 +977,7 @@ def _handle_image_generate(args, **kw):
         _script_path = str(__import__('pathlib').Path.home() / ".hermes" / "scripts" / "comfyui_image_gen.py")
         if _script_path not in _sys.path:
             _sys.path.insert(0, str(__import__('pathlib').Path(_script_path).parent))
-        from comfyui_image_gen import generate_image as _comfy_generate
+        from comfyui_image_gen import generate_image as _comfy_generate, _check_comfyui as _check_comfy
     except Exception as _exc:
         import json as _json
         return _json.dumps({
@@ -985,6 +985,16 @@ def _handle_image_generate(args, **kw):
             "image": None,
             "error": f"Failed to load ComfyUI backend: {_exc}",
             "error_type": "import_error",
+        })
+
+    # Health check: verify ComfyUI is reachable before attempting generation
+    if not _check_comfy():
+        import json as _json
+        return _json.dumps({
+            "success": False,
+            "image": None,
+            "error": "ComfyUI server unreachable on port 8188. Make sure ComfyUI is running.",
+            "error_type": "server_unreachable",
         })
 
     # Map aspect_ratio to ComfyUI dimensions
@@ -996,14 +1006,24 @@ def _handle_image_generate(args, **kw):
     }
     _aspect = _aspect_map.get(aspect_ratio, "portrait")
 
-    try:
-        _result = _comfy_generate(prompt=prompt, aspect_ratio=_aspect)
-    except Exception as _exc:
+    # Retry logic: up to 2 attempts with backoff for transient failures
+    _last_exc = None
+    for _attempt in range(2):
+        try:
+            _result = _comfy_generate(prompt=prompt, aspect_ratio=_aspect)
+            break
+        except Exception as _exc:
+            _last_exc = _exc
+            if _attempt == 0:
+                logger.warning("ComfyUI generation attempt %d failed: %s — retrying", _attempt + 1, _exc)
+                import time; time.sleep(2)
+                continue
+    else:
         import json as _json
         return _json.dumps({
             "success": False,
             "image": None,
-            "error": f"ComfyUI generation failed: {_exc}",
+            "error": f"ComfyUI generation failed after 2 attempts: {_last_exc}",
             "error_type": "generation_error",
         })
 

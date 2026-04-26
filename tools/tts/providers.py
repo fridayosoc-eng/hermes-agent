@@ -262,7 +262,8 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 # Provider: Sydney/Chatterbox (local mlx-audio via sydney_tts_server :9001)
 # -----------------------------------------------------------------------
 def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    import requests
+    import requests as _rq
+    import time as _time
     ch_config = tts_config.get("chatterbox", {})
     base_url = ch_config.get("url", tts_config.get("sydney", {}).get("url", "http://localhost:9001/v1/audio/speech"))
     model = ch_config.get("model", DEFAULT_CHATTERBOX_MODEL)
@@ -271,15 +272,27 @@ def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, 
         "model": model, "input": text,
         "response_format": "opus" if want_opus else "wav",
     }
-    response = requests.post(base_url, json=payload, timeout=120)
-    if response.status_code != 200:
-        raise RuntimeError(f"Sydney TTS server returned {response.status_code}: {response.text}")
-    audio_data = response.content
-    if not audio_data:
-        raise RuntimeError("Sydney TTS server returned empty audio")
-    with open(output_path, "wb") as f:
-        f.write(audio_data)
-    return output_path
+    # Retry up to 3 times with backoff for transient TTS server failures
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = _rq.post(base_url, json=payload, timeout=30)
+            if response.status_code == 200 and response.content:
+                with open(output_path, "wb") as f:
+                    f.write(response.content)
+                return output_path
+            last_error = RuntimeError(
+                f"Sydney TTS server returned {response.status_code}: {response.text[:200]}"
+            )
+        except _rq.Timeout:
+            last_error = RuntimeError("Sydney TTS server timed out after 30s")
+        except _rq.ConnectionError:
+            last_error = RuntimeError("Sydney TTS server connection refused (port 9001)")
+        except Exception as exc:
+            last_error = RuntimeError(f"Sydney TTS error: {exc}")
+        if attempt < 2:
+            _time.sleep(2 ** attempt)  # 1s, 2s backoff
+    raise last_error or RuntimeError("Sydney TTS generation failed after 3 attempts")
 
 # -----------------------------------------------------------------------
 # Provider: Mistral (Voxtral TTS)

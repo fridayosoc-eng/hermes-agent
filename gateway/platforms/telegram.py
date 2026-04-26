@@ -252,6 +252,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
 
+        # Per-user rate limiter to prevent flooding
+        from gateway.rate_limiter import RateLimiter
+        self._rate_limiter = RateLimiter(max_tokens=10, refill_rate=1.0)
+
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
@@ -2398,6 +2402,16 @@ class TelegramAdapter(BasePlatformAdapter):
         if not update.message or not update.message.text:
             return
         if not self._should_process_message(update.message):
+            return
+
+        # Rate limit check per chat
+        chat_id = str(update.message.chat_id)
+        if not self._rate_limiter.allow(chat_id):
+            logger.warning("Rate limited: chat_id=%s", chat_id)
+            try:
+                await update.message.reply_text("Slow down! Please wait a moment.")
+            except Exception:
+                pass
             return
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)

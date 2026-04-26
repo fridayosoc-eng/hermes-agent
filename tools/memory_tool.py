@@ -50,9 +50,18 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
-def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+def get_memory_dir(user_id: str = "") -> Path:
+    """Return the profile-scoped memories directory.
+
+    If user_id is provided and non-empty, returns a user-scoped subdirectory
+    to isolate memory between different gateway users.
+    """
+    base = get_hermes_home() / "memories"
+    if user_id and user_id not in ("default", ""):
+        user_dir = base / "users" / user_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        return user_dir
+    return base
 
 ENTRY_DELIMITER = "\n§\n"
 
