@@ -10,7 +10,7 @@ from gateway.personas.base import Persona
 logger = logging.getLogger(__name__)
 
 # Defaults — can be overridden via environment variables
-_DEFAULT_MODEL = "Qwen3.6-35B-A3B-Heretic-MLX-mixed-6.4bit"
+_DEFAULT_MODEL = "Qwen3.6-35B-A3B-Heretic-MLX-4bit"
 _DEFAULT_LLM_URL = "http://127.0.0.1:8000/v1"
 
 
