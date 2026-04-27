@@ -49,3 +49,11 @@ class Persona(ABC):
     def voice_chunk_keywords(self) -> Optional[List[str]]:
         """Keywords for voice chunking. None = use default sentence splitting."""
         return None
+
+    def voice_chunk_max(self) -> int:
+        """Max chars per TTS chunk. Override for slow TTS providers."""
+        return 900
+
+    def tts_timeout(self) -> int:
+        """Per-request TTS timeout in seconds. Override for slow providers."""
+        return 60

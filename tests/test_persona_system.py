@@ -97,6 +97,14 @@ class TestSydneyPersona:
         assert "johnny" in keywords
         assert len(keywords) > 5
 
+    def test_voice_chunk_max(self):
+        p = SydneyPersona()
+        assert p.voice_chunk_max() == 300
+
+    def test_tts_timeout(self):
+        p = SydneyPersona()
+        assert p.tts_timeout() == 90
+
     def test_system_prompt_path(self, tmp_path):
         p = SydneyPersona()
         path = p.system_prompt_path(tmp_path)
@@ -138,6 +146,14 @@ class TestFridayPersona:
     def test_voice_mode_off(self):
         p = FridayPersona()
         assert p.voice_mode() == "off"
+
+    def test_default_chunk_max(self):
+        p = FridayPersona()
+        assert p.voice_chunk_max() == 900
+
+    def test_default_tts_timeout(self):
+        p = FridayPersona()
+        assert p.tts_timeout() == 60
 
     def test_no_health_check_needed(self):
         p = FridayPersona()

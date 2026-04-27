@@ -60,3 +60,9 @@ class SydneyPersona(Persona):
             "want to know", "should i", "do you want", "want me",
             "tell me", "know what happened",
         ]
+
+    def voice_chunk_max(self) -> int:
+        return 300
+
+    def tts_timeout(self) -> int:
+        return 90

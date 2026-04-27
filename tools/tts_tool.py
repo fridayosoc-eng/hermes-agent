@@ -954,6 +954,15 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
+    # Persona-driven TTS timeout override (set by gateway _send_voice_reply)
+    from gateway.session_context import get_session_env
+    _persona_timeout = get_session_env("HERMES_TTS_TIMEOUT", "")
+    if _persona_timeout:
+        try:
+            tts_config["tts_timeout"] = int(_persona_timeout)
+        except (ValueError, TypeError):
+            pass
+
     # Truncate very long text with a warning. The cap is per-provider
     # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
     max_len = _resolve_max_text_length(provider, tts_config)

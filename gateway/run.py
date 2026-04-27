@@ -6383,7 +6383,7 @@ class GatewayRunner:
     # on these natural pause points so each segment becomes its own TTS bubble,
     # giving Johnny a chance to say "continue" between segments.
 
-    _VOICE_CHUNK_MAX = 900   # chars per TTS bubble (keeps audio under ~60s)
+    _VOICE_CHUNK_MAX = 900   # chars per TTS bubble (default; overridden by persona)
     _VOICE_CHUNK_MIN = 400   # don't split tiny stubs; pad onto next segment
     _VOICE_SEND_DELAY = 0.6  # seconds between sequential voice bubbles
 
@@ -6394,16 +6394,18 @@ class GatewayRunner:
         Otherwise, only length-based splitting applies.
 
         Strategy:
-        1. Accumulate sentences into chunks up to _VOICE_CHUNK_MAX (900 chars)
+        1. Accumulate sentences into chunks up to chunk_max (default 900, persona override)
         2. When a HOOK sentence is encountered (if persona provides keywords),
            emit the accumulated chunk BEFORE the hook.
         3. When the accumulated chunk exceeds MAX, emit it and continue.
         4. Bare ellipsis fragments ("...") are merged into the previous chunk.
-        5. Small remainders (<400 chars) at end are appended to the last chunk.
+        5. Small remainders at end are appended to the last chunk.
         """
         if not text:
             return []
 
+        chunk_max = persona.voice_chunk_max() if persona else self._VOICE_CHUNK_MAX
+        chunk_min = max(chunk_max // 3, 100)
         hook_keywords = persona.voice_chunk_keywords() if persona else None
         hook_keywords_pat = None
         if hook_keywords:
@@ -6453,19 +6455,19 @@ class GatewayRunner:
                 continue
 
             # Would adding this sentence push us over max?
-            exceeds_max = (current_len + sent_len + 1 > self._VOICE_CHUNK_MAX)
+            exceeds_max = (current_len + sent_len + 1 > chunk_max)
 
             if exceeds_max and current:
                 # Hard wrap: flush current, then deal with the oversized sentence
                 emit()
                 # If the sentence itself exceeds max, split it mid-word
-                while sent_len > self._VOICE_CHUNK_MAX:
-                    chunk = sent[: self._VOICE_CHUNK_MAX]
+                while sent_len > chunk_max:
+                    chunk = sent[: chunk_max]
                     split_at = chunk.rfind(" ")
-                    if split_at < self._VOICE_CHUNK_MIN:
+                    if split_at < chunk_min:
                         split_at = chunk.rfind("-")
-                    if split_at < self._VOICE_CHUNK_MIN:
-                        split_at = self._VOICE_CHUNK_MAX
+                    if split_at < chunk_min:
+                        split_at = chunk_max
                     result.append(chunk[:split_at].strip())
                     sent = sent[split_at:].strip()
                     sent_len = len(sent)
@@ -6473,21 +6475,21 @@ class GatewayRunner:
                     hook = is_hook(sent)
 
             # Hook sentence: emit accumulated chunk BEFORE the hook if the chunk is
-            # large enough (>=300 chars) — natural pause point in long narrative.
+            # large enough — natural pause point in long narrative.
             # Small chunks keep accumulating; the hook's own emit handles the split.
-            if hook and current and current_len >= 300:
+            if hook and current and current_len >= chunk_min:
                 emit()
 
             # Now add the sentence (either it fit, or we're starting fresh after a flush)
-            if sent_len > self._VOICE_CHUNK_MAX and not current:
+            if sent_len > chunk_max and not current:
                 # Lone sentence too long — split and add remainder
-                while sent_len > self._VOICE_CHUNK_MAX:
-                    chunk = sent[: self._VOICE_CHUNK_MAX]
+                while sent_len > chunk_max:
+                    chunk = sent[: chunk_max]
                     split_at = chunk.rfind(" ")
-                    if split_at < self._VOICE_CHUNK_MIN:
+                    if split_at < chunk_min:
                         split_at = chunk.rfind("-")
-                    if split_at < self._VOICE_CHUNK_MIN:
-                        split_at = self._VOICE_CHUNK_MAX
+                    if split_at < chunk_min:
+                        split_at = chunk_max
                     result.append(chunk[:split_at].strip())
                     sent = sent[split_at:].strip()
                     sent_len = len(sent)
@@ -6504,7 +6506,7 @@ class GatewayRunner:
         # Flush remainder
         if current:
             _rem = " ".join(current).strip()
-            if len(_rem) >= self._VOICE_CHUNK_MIN or not result:
+            if len(_rem) >= chunk_min or not result:
                 result.append(_rem)
             elif result:
                 # Small remainder — pad onto last chunk rather than orphan it
@@ -6515,7 +6517,7 @@ class GatewayRunner:
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as one or more voice messages.
 
-        In story mode Sydney writes ~600-800 char segments ending with a hook.
+        In story mode Sydney writes ~200-280 char segments ending with a hook.
         Each segment becomes its own Telegram voice bubble, giving Johnny a
         chance to say "continue" before the next segment plays.
         """
@@ -6523,14 +6525,21 @@ class GatewayRunner:
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            chunks = self._chunkify_voice_text(
-                text,
-                persona=self._personas.current(
-                    self._session_key_for_source(event.source)
-                ) if hasattr(event, 'source') and event.source else None,
-            )
+            persona = self._personas.current(
+                self._session_key_for_source(event.source)
+            ) if hasattr(event, 'source') and event.source else None
+
+            chunks = self._chunkify_voice_text(text, persona=persona)
             if not chunks:
                 return
+
+            # Set persona-driven TTS timeout in session context
+            if persona:
+                try:
+                    from gateway.session_context import set_session_env
+                    set_session_env("HERMES_TTS_TIMEOUT", str(persona.tts_timeout()))
+                except Exception:
+                    pass
 
             adapter = self.adapters.get(event.source.platform)
             guild_id = self._get_guild_id(event) if adapter else None

@@ -272,13 +272,13 @@ def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, 
         "model": model, "input": text,
         "response_format": "opus" if want_opus else "wav",
     }
-    # Chatterbox Turbo on Apple Silicon takes ~35s for typical responses.
-    # Use 60s timeout to avoid cutting off valid generations, with 1 retry
-    # for genuine transient failures (server restart, cold start).
+    # Chatterbox Turbo on Apple Silicon: ~30s base + ~0.045s/char.
+    # Default 90s timeout handles ~1300 chars; persona can override via config.
+    timeout = ch_config.get("timeout", tts_config.get("tts_timeout", 90))
     last_error = None
     for attempt in range(2):
         try:
-            response = _rq.post(base_url, json=payload, timeout=60)
+            response = _rq.post(base_url, json=payload, timeout=timeout)
             if response.status_code == 200 and response.content:
                 with open(output_path, "wb") as f:
                     f.write(response.content)
@@ -287,7 +287,7 @@ def _generate_chatterbox_tts(text: str, output_path: str, tts_config: Dict[str, 
                 f"Sydney TTS server returned {response.status_code}: {response.text[:200]}"
             )
         except _rq.Timeout:
-            last_error = RuntimeError("Sydney TTS server timed out after 60s")
+            last_error = RuntimeError(f"Sydney TTS server timed out after {timeout}s")
         except _rq.ConnectionError:
             last_error = RuntimeError("Sydney TTS server connection refused (port 9001)")
         except Exception as exc:
