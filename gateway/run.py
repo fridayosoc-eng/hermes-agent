@@ -869,6 +869,31 @@ class GatewayRunner:
                 pass
         threading.Thread(target=_do_warmup, daemon=True).start()
 
+    def _schedule_comfyui_warmup(self) -> None:
+        """Fire a background thread to pre-warm ComfyUI model cache.
+
+        Flux checkpoint (22GB) + T5 (4.6GB) take 10+ minutes to load from disk
+        on cold start when GPU memory is shared with oMLX. A warmup generation
+        after gateway startup prevents the first real image request from timing out.
+        """
+        import threading
+        def _do_warmup():
+            try:
+                import sys as _sys
+                from pathlib import Path
+                _script_path = str(Path.home() / ".hermes" / "scripts" / "comfyui_image_gen.py")
+                if _script_path not in _sys.path:
+                    _sys.path.insert(0, str(Path(_script_path).parent))
+                from comfyui_image_gen import warmup as _comfyui_warmup
+                ok, elapsed = _comfyui_warmup()
+                if ok:
+                    logger.info("ComfyUI warmup completed in %.0fs", elapsed)
+                else:
+                    logger.debug("ComfyUI warmup skipped (unreachable or failed)")
+            except Exception as exc:
+                logger.debug("ComfyUI warmup error: %s", exc)
+        threading.Thread(target=_do_warmup, daemon=True).start()
+
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
         """Call adapter.disconnect() defensively, swallowing any error.
 
@@ -2177,6 +2202,10 @@ class GatewayRunner:
         # means the first voice request won't suffer that cold-start penalty.
         # Only fires when chatterbox/sydney TTS is the active provider.
         self._schedule_tts_warmup()
+
+        # Pre-warm ComfyUI model cache — Flux + T5 are 27GB and take 10+ min
+        # to load from disk on cold start when GPU is shared with oMLX.
+        self._schedule_comfyui_warmup()
 
         if connected_count == 0:
             if startup_nonretryable_errors:
