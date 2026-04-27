@@ -4837,7 +4837,17 @@ class GatewayRunner:
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                _voice_media = await self._send_voice_reply(event, response)
+
+                # Deliver images/files extracted from voice text (e.g. ComfyUI
+                # output) even in voice_only mode where response gets wiped.
+                if _voice_media:
+                    _media_adapter = self.adapters.get(source.platform)
+                    if _media_adapter:
+                        await self._deliver_media_paths(
+                            _voice_media, event, _media_adapter,
+                        )
+
                 # In voice_only mode, suppress the text reply — Sydney speaks only
                 _vk = self._voice_key(event.source.platform, event.source.chat_id)
                 if self._voice_mode.get(_vk) == "voice_only":
@@ -6543,14 +6553,27 @@ class GatewayRunner:
 
         return result
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> list[str]:
         """Generate TTS audio and send as one or more voice messages.
 
         In story mode Sydney writes ~200-280 char segments ending with a hook.
         Each segment becomes its own Telegram voice bubble, giving Johnny a
         chance to say "continue" before the next segment plays.
+
+        Returns list of MEDIA: file paths extracted from text (for delivery
+        after voice, even in voice_only mode).
         """
         import uuid as _uuid
+
+        # Extract MEDIA: tags before TTS — they should be delivered as
+        # file attachments, not spoken aloud by the voice clone.
+        _media_paths: list[str] = []
+        for m in re.finditer(r'MEDIA:(\S+)', text):
+            path = m.group(1).strip().rstrip('",}')
+            if path:
+                _media_paths.append(path)
+        text = re.sub(r'MEDIA:\S+', '', text).strip()
+
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
@@ -6560,7 +6583,7 @@ class GatewayRunner:
 
             chunks = self._chunkify_voice_text(text, persona=persona)
             if not chunks:
-                return
+                return _media_paths
 
             # Set persona-driven TTS timeout in session context
             if persona:
@@ -6630,6 +6653,8 @@ class GatewayRunner:
 
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+
+        return _media_paths
 
     async def _deliver_media_from_response(
         self,
@@ -6706,6 +6731,43 @@ class GatewayRunner:
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+    async def _deliver_media_paths(
+        self,
+        paths: list[str],
+        event: MessageEvent,
+        adapter,
+    ) -> None:
+        """Deliver a list of file paths as native platform attachments.
+
+        Used after voice_only TTS to send images/files that were extracted
+        from the response text before it was wiped.
+        """
+        from pathlib import Path
+
+        _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+        _thread_meta = (
+            {"thread_id": event.source.thread_id}
+            if event.source.thread_id
+            else None
+        )
+        for path in paths:
+            try:
+                ext = Path(path).suffix.lower()
+                if ext in _IMAGE_EXTS:
+                    await adapter.send_image_file(
+                        chat_id=event.source.chat_id,
+                        image_path=path,
+                        metadata=_thread_meta,
+                    )
+                else:
+                    await adapter.send_document(
+                        chat_id=event.source.chat_id,
+                        file_path=path,
+                        metadata=_thread_meta,
+                    )
+            except Exception as e:
+                logger.warning("[%s] Voice-mode media delivery failed: %s", adapter.name, e)
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
