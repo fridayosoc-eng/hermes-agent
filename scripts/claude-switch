@@ -4,7 +4,6 @@
 set -euo pipefail
 
 PYTHON3=$(command -v python3)
-CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 
 switch_to_27b() {
     $PYTHON3 - <<'PYEOF'
