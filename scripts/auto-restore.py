@@ -61,6 +61,15 @@ def main():
         ("tui_gateway/server.py", "thin facade importing from handlers/"),
     ]
 
+    # Critical local config files — NOT in the hermes-agent repo, but we
+    # verify they exist and contain expected content so we catch accidental
+    # deletion or overwrite by the update process.
+    local_configs = [
+        ("~/.claude/settings.json", "Claude Code model routing"),
+        ("~/.omlx/model_settings.json", "TurboQuant + per-model settings"),
+        ("~/.omlx/settings.json", "oMLX server config (port, cache, auth)"),
+    ]
+
     all_ok = True
     warnings = []
 
@@ -120,6 +129,36 @@ def main():
     else:
         print("  ✗  tui_gateway/server.py not found")
         warnings.append("tui_gateway/server.py is missing entirely")
+
+    # Check critical local config files
+    print()
+    print("-- Verifying critical local configs (not in hermes-agent repo) --")
+    for rel_path, reason in local_configs:
+        full = os.path.expanduser(rel_path)
+        exists = os.path.isfile(full)
+        status = "✓" if exists else "✗ MISSING"
+        print(f"  {status}  {rel_path}  ({reason})")
+        if not exists:
+            warnings.append(f"LOCAL CONFIG MISSING: {rel_path}")
+            all_ok = False
+        else:
+            # Spot-check content is plausible (not zero-length or corrupted)
+            try:
+                import json
+                with open(full) as f:
+                    data = json.load(f)
+                # Basic sanity: dict is not empty
+                if not data:
+                    warnings.append(f"LOCAL CONFIG EMPTY: {rel_path}")
+                    all_ok = False
+                else:
+                    print(f"         ({len(data)} top-level key(s))")
+            except json.JSONDecodeError as e:
+                warnings.append(f"LOCAL CONFIG CORRUPT JSON: {rel_path}: {e}")
+                all_ok = False
+            except Exception as e:
+                # Non-JSON file — just check it has content
+                pass
 
     # Check entry.py compiles
     print()

@@ -1,0 +1,95 @@
+#!/bin/bash
+# claude-switch — switch Claude Code between model providers
+# Usage: claude-switch [27b|glm|min|status]
+set -euo pipefail
+
+PYTHON3=$(command -v python3)
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+
+switch_to_27b() {
+    $PYTHON3 - <<'PYEOF'
+import json
+with open("/Users/fridayos/.claude/settings.json", "w") as f:
+    json.dump({
+        "env": {
+            "ANTHROPIC_AUTH_TOKEN": "local-no-key",
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:8001/v1"
+        },
+        "model": "Qwen3.6-27B-Abliterated-Heretic-Uncensored-MLX-4bit",
+        "theme": "dark",
+        "defaultModels": {
+            "sonnet": "Qwen3.6-27B-Abliterated-Heretic-Uncensored-MLX-4bit",
+            "opus": "Qwen3.6-27B-Abliterated-Heretic-Uncensored-MLX-4bit",
+            "haiku": "Qwen3.6-27B-Abliterated-Heretic-Uncensored-MLX-4bit"
+        }
+    }, f, indent=2)
+print("✓ Switched to 27B local → http://127.0.0.1:8001/v1")
+PYEOF
+}
+
+switch_to_glm() {
+    $PYTHON3 - <<'PYEOF'
+import json
+with open("/Users/fridayos/.claude/settings.json", "w") as f:
+    json.dump({
+        "env": {
+            "ANTHROPIC_AUTH_TOKEN": "4cd074e61bec4fbd97847c86da29c8f0.Rni4OpPmzlpzCfDf",
+            "ANTHROPIC_BASE_URL": "https://api.z.ai/api/anthropic"
+        },
+        "model": "glm-5.1",
+        "theme": "dark",
+        "defaultModels": {
+            "sonnet": "glm-5.1",
+            "opus": "glm-5.1",
+            "haiku": "glm-5-turbo"
+        }
+    }, f, indent=2)
+print("✓ Switched to GLM-5.1 → https://api.z.ai/api/anthropic")
+PYEOF
+}
+
+switch_to_min() {
+    $PYTHON3 - <<'PYEOF'
+import json
+with open("/Users/fridayos/.claude/settings.json", "w") as f:
+    json.dump({
+        "env": {
+            "ANTHROPIC_AUTH_TOKEN": "",
+            "ANTHROPIC_BASE_URL": "https://api.minimax.io/anthropic"
+        },
+        "model": "MiniMax-M2.7",
+        "theme": "dark",
+        "defaultModels": {
+            "sonnet": "MiniMax-M2.7",
+            "opus": "MiniMax-M2.7",
+            "haiku": "MiniMax-M2.7"
+        }
+    }, f, indent=2)
+print("✓ Switched to MiniMax → https://api.minimax.io/anthropic")
+PYEOF
+}
+
+show_status() {
+    $PYTHON3 - <<'PYEOF'
+import json
+d = json.load(open("/Users/fridayos/.claude/settings.json"))
+url = d["env"]["ANTHROPIC_BASE_URL"]
+model = d["model"]
+print(f"Claude Code → {url}  |  model: {model}")
+PYEOF
+}
+
+case "${1:-}" in
+    27b)  switch_to_27b ;;
+    glm)  switch_to_glm ;;
+    min)  switch_to_min ;;
+    status) show_status ;;
+    "")
+        echo "Usage: claude-switch [27b|glm|min|status]"
+        echo "  27b   → Qwen3.6-27B local (oMLX port 8001, no API cost)"
+        echo "  glm   → GLM-5.1 (z.ai API, stronger reasoning)"
+        echo "  min   → MiniMax-M2.7 (minimax API)"
+        echo "  status → show current config"
+        ;;
+    *) echo "Unknown: $1" && exit 1 ;;
+esac
