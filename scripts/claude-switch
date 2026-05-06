@@ -1,6 +1,6 @@
 #!/bin/bash
 # claude-switch — switch Claude Code between model providers
-# Usage: claude-switch [27b|glm|min|status]
+# Usage: claude-switch [cc-27b|cc-glm|cc-min|ccstatus]
 set -euo pipefail
 
 PYTHON3=$(command -v python3)
@@ -12,7 +12,7 @@ with open("/Users/fridayos/.claude/settings.json", "w") as f:
     json.dump({
         "env": {
             "ANTHROPIC_AUTH_TOKEN": "local-no-key",
-            "ANTHROPIC_BASE_URL": "http://127.0.0.1:8001/v1"
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:8001"
         },
         "model": "Qwen3.6-27B-Abliterated-Heretic-Uncensored-MLX-4bit",
         "theme": "dark",
@@ -22,7 +22,7 @@ with open("/Users/fridayos/.claude/settings.json", "w") as f:
             "haiku": "Qwen3.6-27B-Abliterated-Heretic-Uncensored-MLX-4bit"
         }
     }, f, indent=2)
-print("✓ Switched to 27B local → http://127.0.0.1:8001/v1")
+print("✓ Switched to 27B local → http://127.0.0.1:8001")
 PYEOF
 }
 
@@ -79,16 +79,16 @@ PYEOF
 }
 
 case "${1:-}" in
-    27b)  switch_to_27b ;;
-    glm)  switch_to_glm ;;
-    min)  switch_to_min ;;
-    status) show_status ;;
+    cc-27b)  switch_to_27b ;;
+    cc-glm)  switch_to_glm ;;
+    cc-min)  switch_to_min ;;
+    ccstatus) show_status ;;
     "")
-        echo "Usage: claude-switch [27b|glm|min|status]"
-        echo "  27b   → Qwen3.6-27B local (oMLX port 8001, no API cost)"
-        echo "  glm   → GLM-5.1 (z.ai API, stronger reasoning)"
-        echo "  min   → MiniMax-M2.7 (minimax API)"
-        echo "  status → show current config"
+        echo "Usage: claude-switch [cc-27b|cc-glm|cc-min|ccstatus]"
+        echo "  cc-27b  → Qwen3.6-27B local (oMLX port 8001, no API cost)"
+        echo "  cc-glm  → GLM-5.1 (z.ai API, stronger reasoning)"
+        echo "  cc-min  → MiniMax-M2.7 (minimax API)"
+        echo "  ccstatus → show current config"
         ;;
     *) echo "Unknown: $1" && exit 1 ;;
 esac
