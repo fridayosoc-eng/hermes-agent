@@ -402,8 +402,29 @@ def _run_pending_fleet_restart() -> bool:
 
     True when all discovered targets recovered (or none exist); False if incomplete.
 
-    See #95294.
+    See #95294. The module-reload evictor here closes the last race where a successful
+    bytecode sweep + ``importlib.invalidate_caches()`` is not enough: ``hermes_cli.gateway``
+    transitively imports top-level modules that were already loaded by the update's pre-swap
+    interpreter (``utils``, ``hermes_cli.config``, ``hermes_cli.auth``, ...). Even with the
+    importlib caches invalidated, ``from utils import file_signature`` short-circuits to
+    ``sys.modules['utils']`` (the OLD module object from the pre-swap interpreter) and raises
+    ``ImportError`` because the cached module doesn't have the new symbol. Evicting the
+    affected modules from ``sys.modules`` forces a fresh load from the updated source on the
+    next import. See #111494.
     """
+    import sys as _sys
+    _PURGE_BEFORE_REIMPORT = (
+        # Top-level modules updated in this checkout; eviction guarantees a re-import from disk
+        # rather than a stale ``sys.modules`` short-circuit.
+        "utils",
+        # ``hermes_cli.gateway`` reaches ``utils`` via these — purge them all so the chain
+        # genuinely reloads instead of pulling a stale ``utils`` out of one of them.
+        "hermes_cli.config",
+        "hermes_cli.auth",
+        "hermes_cli.managed_scope",
+    )
+    for _name in _PURGE_BEFORE_REIMPORT:
+        _sys.modules.pop(_name, None)
     from hermes_cli.update_cmd import _m
     print("→ Restarting gateways left on pre-update code...")
     # Warn if legacy Hermes gateway unit files are still installed. When both hermes.service (from a

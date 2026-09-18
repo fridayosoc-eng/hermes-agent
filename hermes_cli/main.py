@@ -2266,13 +2266,16 @@ def _clear_bytecode_cache(root: Path) -> int:
 
     Returns the number of directories removed.
     """
+    # Skip Hermes-managed / non-source tree directories. ``.hermes-runtime`` holds the embedded
+    # Python runtime Hermes downloads for self-bootstrap; cleaning its ``email/__pycache__/utils.*``
+    # is harmless but pointless (regenerated on next boot from the bundled tarball) and can race
+    # with the bootstrap process holding the file open. ``.worktrees`` is the per-profile
+    # git-worktree layout for parallel agents; cleaning it would force every parallel worker
+    # to recompile its own copies on the next import — not what we want.
+    _skip_dirs = {"venv", ".venv", "node_modules", ".git", ".worktrees", ".hermes-runtime"}
     removed = 0
     for dirpath, dirnames, _ in os.walk(root):
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
-        ]
+        dirnames[:] = [d for d in dirnames if d not in _skip_dirs]
         if os.path.basename(dirpath) == "__pycache__":
             try:
                 shutil.rmtree(dirpath)

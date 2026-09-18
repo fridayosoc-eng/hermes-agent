@@ -790,8 +790,18 @@ def _run_pre_update_backup(args) -> Optional[str]:
 
 def _sweep_bytecode_after_update(branch: str) -> None:
     """Clear stale ``__pycache__`` (else gateway restart ImportErrors on names absent from old
-    bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts."""
+    bytecode), re-stamp the fingerprint, refresh the bootstrap cache scripts.
+
+    Also invalidates ``importlib``'s in-memory finder caches. The update process imported the
+    pre-swap tree at startup, so ``sys.modules['utils']`` etc. hold the OLD module objects. The
+    catch-up fleet restart (``_run_pending_fleet_restart``) runs in this same interpreter shortly
+    after and re-imports ``hermes_cli.gateway`` → transitively ``utils``. Without invalidation,
+    Python returns the cached old module and `from utils import <new_symbol>` raises ImportError.
+    Invalidation makes Python re-scan the finder paths on the next import, which (combined with the
+    bytecode sweep above) yields a fresh module load from the updated source. See #111494.
+    """
     from hermes_cli.update_cmd import _m
+    import importlib
     # The update process is still the old Python interpreter process. Run one final cache/module refresh
     # immediately before lazy backend refresh, which imports newly-pulled modules that may depend on fresh
     # symbols in hermes_constants or lazy_deps. The dependency install above may also have regenerated
@@ -799,6 +809,7 @@ def _sweep_bytecode_after_update(branch: str) -> None:
     removed = _m()._clear_bytecode_cache(_m().PROJECT_ROOT)
     if removed:
         print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+    importlib.invalidate_caches()
     _m()._record_bytecode_fingerprint()
     _m()._refresh_bootstrap_cache_scripts(branch)
 
