@@ -422,6 +422,23 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _project_constraint_file() -> Optional[Path]:
+    """Return the project's committed ``pip-constraints.txt`` if it exists, else None.
+
+    The file pins every versioned package the project cares about. We attach
+    it as ``--constraint`` on every lazy install so a stale ``LAZY_DEPS`` entry
+    (or a regression that forgot to bump one of the four sources) cannot
+    downgrade a previously-pinned package. uv and pip both accept multiple
+    ``--constraint`` flags; later flags do not override earlier ones (a more
+    permissive spec still satisfies the wall), so order is preserved.
+    """
+    # tools/lazy_deps.py lives at <repo>/tools/lazy_deps.py; the constraints
+    # file lives at <repo>/pip-constraints.txt.
+    here = Path(__file__).resolve().parent
+    candidate = here.parent / "pip-constraints.txt"
+    return candidate if candidate.is_file() else None
+
+
 def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
     """Package dirs a freshly installed *spec* owns, from the dist's file list (``python-telegram-bot``
     ships ``telegram``; some ship several)."""
@@ -520,6 +537,11 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
     target = _lazy_install_target()
     constraints: Optional[Path] = None
     extra_args: list[str] = ["--dry-run"] if dry_run else []
+    # Always attach pip-constraints.txt when present so a stale LAZY_DEPS entry
+    # cannot downgrade past the wall (Sep 15/16/17/18 hindsight-client drift class).
+    # uv/pip both accept multiple --constraint flags; the per-call constraint_lines
+    # still win when both are present.
+    project_constraint = _project_constraint_file()
     if target is not None:
         if err := _ensure_target_ready(target):
             return _InstallResult(False, "", err)
@@ -529,6 +551,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
         constraints = _write_constraints_file(constraint_lines)
     if constraints is not None:
         extra_args += ["--constraint", str(constraints)]
+    if project_constraint is not None and project_constraint != constraints:
+        extra_args += ["--constraint", str(project_constraint)]
 
     def _finish(r: subprocess.CompletedProcess) -> _InstallResult:
         if r.returncode == 0:

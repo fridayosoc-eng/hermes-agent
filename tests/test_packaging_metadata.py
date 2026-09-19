@@ -434,3 +434,150 @@ def test_security_pins_present_in_mirrored_lazy_features():
         "pyproject extras — the lazy install path would not enforce the "
         "CVE-patched floor:\n  " + "\n  ".join(problems)
     )
+
+
+# --- Constraint-sync regression (Sep 15 / 16 / 17 / 18 incident class) ---
+#
+# A package version can be pinned in up to FOUR places. All four must agree,
+# or a `hermes update` or `lazy_deps.ensure()` call can silently downgrade an
+# already-pinned package. The watchdog alerts when disk drifts from the
+# constraint file, but the watchdog is reactive — this test is the proactive
+# guard that fails CI before a drift ships.
+#
+# Sources (in canonical order):
+#   1. pyproject.toml          — [project.optional-dependencies] extras
+#   2. tools/lazy_deps.py       — LAZY_DEPS[feature] tuples
+#   3. uv.lock                  — package specifier lines
+#   4. pip-constraints.txt      — committed constraint file (project root)
+#
+# The on-disk venv is NOT checked here (CI lacks the env); the four-source
+# sync test is the upstream signal. The watchdog covers the disk half in
+# production.
+_CONSTRAINT_SYNC_PINNED_PACKAGES = (
+    # (distribution name, optional LAZY_DEPS feature that must mirror it)
+    ("hindsight-client", "memory.hindsight"),
+)
+
+
+def _pyproject_extra_pins() -> dict[str, str]:
+    """Return {dist_name_lower: version} from pyproject optional-dependencies."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    pins: dict[str, str] = {}
+    for _extra, specs in extras.items():
+        for spec in specs:
+            for single in spec.split(","):
+                single = single.strip()
+                if "==" not in single:
+                    continue
+                name, version = single.split("==", 1)
+                name = _distribution_name(name)
+                pins.setdefault(name, version)
+    return pins
+
+
+def _uvlock_pins() -> dict[str, str]:
+    """Return {dist_name_lower: version} extracted from uv.lock [[package]] blocks."""
+    lock_path = REPO_ROOT / "uv.lock"
+    if not lock_path.exists():
+        pytest.skip("uv.lock not present (project not uv-managed)")
+    text = lock_path.read_text(encoding="utf-8")
+    pins: dict[str, str] = {}
+    for m in re.finditer(
+        r'\[\[package\]\]\s*\nname\s*=\s*"([^"]+)"\s*\nversion\s*=\s*"([^"]+)"',
+        text,
+    ):
+        pins.setdefault(m.group(1).lower(), m.group(2))
+    return pins
+
+
+def _pip_constraints_pins() -> dict[str, str]:
+    """Return {dist_name_lower: version} from pip-constraints.txt (top of repo)."""
+    p = REPO_ROOT / "pip-constraints.txt"
+    if not p.exists():
+        return {}
+    pins: dict[str, str] = {}
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "==" not in line:
+            continue
+        name, version = line.split("==", 1)
+        pins.setdefault(_distribution_name(name), version)
+    return pins
+
+
+def _lazy_deps_pins() -> dict[str, tuple[str, str]]:
+    """Return {feature: (dist_name_lower, version)} from tools/lazy_deps.py.
+
+    We don't actually import lazy_deps (it imports a lot at module load); a
+    targeted regex on the LAZY_DEPS dict literal is enough and keeps the test
+    cheap.
+    """
+    p = REPO_ROOT / "tools" / "lazy_deps.py"
+    text = p.read_text(encoding="utf-8")
+    pins: dict[str, tuple[str, str]] = {}
+    for m in re.finditer(
+        r'"(?P<feature>[a-z][a-z0-9_.]+)"\s*:\s*\(\s*"(?P<spec>[^"]+==[^"]+)"',
+        text,
+    ):
+        spec = m.group("spec")
+        if "==" in spec:
+            name, version = spec.split("==", 1)
+            pins[m.group("feature")] = (_distribution_name(name), version)
+    return pins
+
+
+def test_constraint_sync_all_sources_agree():
+    """All four sources must agree on the version of every pinned package.
+
+    A drift in any one of pyproject / uv.lock / lazy_deps / pip-constraints
+    opens a downgrade path that the watchdog catches after the fact; this
+    test prevents the drift from shipping.
+    """
+    py = _pyproject_extra_pins()
+    uv = _uvlock_pins()
+    pcf = _pip_constraints_pins()
+    lazy = _lazy_deps_pins()
+
+    problems: list[str] = []
+    for dist, feature in _CONSTRAINT_SYNC_PINNED_PACKAGES:
+        canonical = _distribution_name(dist)
+        expected = py.get(canonical)
+        assert expected, (
+            f"{dist} is in _CONSTRAINT_SYNC_PINNED_PACKAGES but has no "
+            f"pyproject extras pin — add it to [project.optional-dependencies] "
+            f"and bump the matching LAZY_DEPS entry."
+        )
+        uv_ver = uv.get(canonical)
+        if uv_ver and uv_ver != expected:
+            problems.append(
+                f"uv.lock has {dist}=={uv_ver}, pyproject says {expected} "
+                f"(run `uv lock --upgrade-package {dist}`)"
+            )
+        pcf_ver = pcf.get(canonical)
+        if pcf_ver and pcf_ver != expected:
+            problems.append(
+                f"pip-constraints.txt has {dist}=={pcf_ver}, pyproject says "
+                f"{expected} (update pip-constraints.txt)"
+            )
+        if feature:
+            lazy_entry = lazy.get(feature)
+            assert lazy_entry, (
+                f"LAZY_DEPS is missing feature {feature!r} for {dist}"
+            )
+            lazy_name, lazy_ver = lazy_entry
+            assert lazy_name == canonical, (
+                f"LAZY_DEPS[{feature!r}] = {lazy_name!r}, expected {canonical!r}"
+            )
+            if lazy_ver != expected:
+                problems.append(
+                    f"LAZY_DEPS[{feature!r}] has {dist}=={lazy_ver}, "
+                    f"pyproject says {expected} (update tools/lazy_deps.py)"
+                )
+    assert not problems, (
+        "constraint sources disagree — a `hermes update` or `lazy_deps.ensure` "
+        "call would silently downgrade an already-pinned package:\n  "
+        + "\n  ".join(problems)
+    )
