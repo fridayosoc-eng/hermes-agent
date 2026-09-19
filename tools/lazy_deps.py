@@ -535,6 +535,37 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
     can never move a core package out of range); *dry_run* resolves without installing."""
     if not specs:
         return _InstallResult(True, "", "")
+    # Hard runtime floor: refuse any spec whose version is below the canonical pin for known
+    # drift-sensitive packages. This is the LAST guard after `pip-constraints.txt --constraint`
+    # and `feature_missing` — if either fails (stale pyc, mutated in-memory dict, missed constraint
+    # attachment), this still blocks the downgrade. Johnny-local override (Sep 18 incident class).
+    _RUNTIME_FLOORS: dict[str, str] = {
+        "hindsight-client": "0.10.0",
+        "hindsight-api": "0.10.0",
+        "hindsight-api-slim": "0.10.0",
+        "mcp": "2.2.0",
+        "mcp-types": "2.2.0",
+    }
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+    from packaging.version import InvalidVersion, Version
+    for spec in specs:
+        name = _pkg_name_from_spec(spec)
+        if name not in _RUNTIME_FLOORS:
+            continue
+        if "==" not in spec:
+            continue  # not a strict pin — only block exact ==spec downgrades
+        try:
+            requested = Version(spec.split("==", 1)[1].strip())
+            floor = Version(_RUNTIME_FLOORS[name])
+            if requested < floor:
+                logger.error(
+                    "BLOCKED downgrade: %s requested, runtime floor is %s (Sep 18 drift class). "
+                    "If you really need this, edit _RUNTIME_FLOORS in tools/lazy_deps.py.",
+                    spec, _RUNTIME_FLOORS[name],
+                )
+                return _InstallResult(False, "", f"runtime floor refused: {spec} < {_RUNTIME_FLOORS[name]}")
+        except (InvalidSpecifier, InvalidVersion):
+            pass
     target = _lazy_install_target()
     constraints: Optional[Path] = None
     extra_args: list[str] = ["--dry-run"] if dry_run else []
