@@ -180,7 +180,10 @@ class TestInstallArgConstruction:
         assert cmd[-1] == "somepkg==1.2.3"
 
     def test_no_target_args_in_venv_scoped_mode(self, monkeypatch):
-        # Env unset → plain venv-scoped install, no --target / --constraint.
+        # Env unset → plain venv-scoped install, no --target. The project
+        # constraint file (pip-constraints.txt) is still attached as a
+        # --constraint so a stale LAZY_DEPS entry cannot downgrade past the
+        # wall (Sep 15/16/17/18 hindsight-client drift class).
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         monkeypatch.setattr(ld.shutil, "which", lambda _: None)
         captured = {}
@@ -195,7 +198,18 @@ class TestInstallArgConstruction:
         result = ld._venv_pip_install(("somepkg==1.2.3",))
         assert result.success
         assert "--target" not in captured["cmd"]
-        assert "--constraint" not in captured["cmd"]
+        # pip-constraints.txt is allowed (and expected when present); other
+        # --constraint files would mean a regression in the constraint layering.
+        constraint_args = [
+            i for i, tok in enumerate(captured["cmd"])
+            if tok == "--constraint" and i + 1 < len(captured["cmd"])
+        ]
+        for idx in constraint_args:
+            nxt = captured["cmd"][idx + 1]
+            assert nxt.endswith("pip-constraints.txt"), (
+                f"unexpected --constraint {nxt!r} — only pip-constraints.txt "
+                f"should be attached in venv-scoped mode"
+            )
 
     def test_uv_resolution_failure_does_not_fall_through_to_pip(self, monkeypatch):
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
