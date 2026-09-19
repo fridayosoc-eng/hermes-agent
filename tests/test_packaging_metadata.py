@@ -456,6 +456,8 @@ def test_security_pins_present_in_mirrored_lazy_features():
 _CONSTRAINT_SYNC_PINNED_PACKAGES = (
     # (distribution name, optional LAZY_DEPS feature that must mirror it)
     ("hindsight-client", "memory.hindsight"),
+    ("mcp", None),
+    ("mcp-types", None),
 )
 
 
